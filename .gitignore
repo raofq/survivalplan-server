@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# 运行时数据
+*.db
+*.sqlite3
+survivalplan.db
+server.log
+
+# 用户上传的图片（运行时生成，不入库）
+uploads/
+
+# 环境变量
+.env
