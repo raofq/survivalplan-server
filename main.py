@@ -173,6 +173,16 @@ def get_db():
         conn.execute("ALTER TABLE posts ADD COLUMN company TEXT")
     if "contact" not in pcols:
         conn.execute("ALTER TABLE posts ADD COLUMN contact TEXT")
+    # 审核预控：隐藏列（举报自动下架/管理员下架）+ 封禁表
+    if "hidden" not in pcols:
+        conn.execute("ALTER TABLE posts ADD COLUMN hidden INTEGER DEFAULT 0")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS banned_devices (
+            device_id TEXT PRIMARY KEY,
+            reason TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
     return conn
 
 
@@ -284,32 +294,32 @@ def list_posts(category: Optional[str] = None, author: Optional[str] = None, dev
     if liked_by:
         # 我点赞过的帖子（按点赞时间倒序）
         rows = conn.execute(
-            "SELECT p.* FROM posts p JOIN likes l ON l.post_id = p.id WHERE l.device_id = ? ORDER BY l.created_at DESC LIMIT ? OFFSET ?",
+            "SELECT p.* FROM posts p JOIN likes l ON l.post_id = p.id WHERE l.device_id = ? AND p.hidden = 0 ORDER BY l.created_at DESC LIMIT ? OFFSET ?",
             (liked_by, limit, offset),
         ).fetchall()
     elif device_id:
         rows = conn.execute(
-            "SELECT * FROM posts WHERE device_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM posts WHERE device_id = ? AND hidden = 0 ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (device_id, limit, offset),
         ).fetchall()
     elif category and category != "全部" and author:
         rows = conn.execute(
-            "SELECT * FROM posts WHERE category = ? AND author = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM posts WHERE category = ? AND author = ? AND hidden = 0 ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (category, author, limit, offset),
         ).fetchall()
     elif author:
         rows = conn.execute(
-            "SELECT * FROM posts WHERE author = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM posts WHERE author = ? AND hidden = 0 ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (author, limit, offset),
         ).fetchall()
     elif category and category != "全部":
         rows = conn.execute(
-            "SELECT * FROM posts WHERE category = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM posts WHERE category = ? AND hidden = 0 ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (category, limit, offset),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            "SELECT * FROM posts WHERE hidden = 0 ORDER BY created_at DESC LIMIT ? OFFSET ?",
             (limit, offset),
         ).fetchall()
     conn.close()
@@ -322,6 +332,10 @@ def create_post(post: PostIn):
         raise HTTPException(400, "无效分类")
     if not post.title.strip() or not post.content.strip():
         raise HTTPException(400, "标题和内容不能为空")
+    # 审核预控：封禁设备禁止发帖
+    ban = is_banned(post.device_id)
+    if ban:
+        raise HTTPException(403, f"账号已被封禁（原因：{ban}），如有异议请联系管理员")
     # 工作帖安全机制：必填公司/联系方式 + 风险检测
     if post.category == "工作":
         if not (post.company or "").strip():
@@ -436,6 +450,10 @@ def list_comments(post_id: str, limit: int = 20, offset: int = 0):
 def create_comment(post_id: str, comment: CommentIn):
     if not comment.content.strip():
         raise HTTPException(400, "内容不能为空")
+    # 审核预控：封禁设备禁止评论
+    ban = is_banned(comment.device_id)
+    if ban:
+        raise HTTPException(403, f"账号已被封禁（原因：{ban}），如有异议请联系管理员")
     hit = check_sensitive(comment.content)
     if hit:
         raise HTTPException(400, f"评论包含敏感词「{hit}」，请修改后再发布")
@@ -482,8 +500,10 @@ def create_report(report: ReportIn):
          report.reported_by.strip() or "匿名", report.device_id, datetime.utcnow().isoformat()),
     )
     conn.commit()
-    audit_log("report", f"{report.target_type}={report.target_id} reason={report.reason.strip()[:20]} device={report.device_id[:8] if report.device_id else 'none'}…")
     conn.close()
+    # 举报达到阈值 → 帖子自动下架
+    auto_hide_if_reported(report.target_type, report.target_id)
+    audit_log("report", f"{report.target_type}={report.target_id} reason={report.reason.strip()[:20]} device={report.device_id[:8] if report.device_id else 'none'}…")
     return {"status": "ok", "id": report_id}
 
 
@@ -511,6 +531,132 @@ def admin_export(x_admin_token: str = Header(default="", alias="X-Admin-Token"))
     conn.close()
     audit_log("admin_export", f"posts={len(data['posts'])} comments={len(data['comments'])} uploads={len(data['uploads'])}")
     return data
+
+
+# ============ 审核预控 ============
+# 举报自动下架阈值（同一目标被举报达 N 次 → 隐藏）
+AUTO_HIDE_REPORTS = 2
+
+
+def require_admin(x_admin_token: str):
+    """管理端鉴权：X-Admin-Token 必须等于环境变量 ADMIN_TOKEN"""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected or x_admin_token != expected:
+        raise HTTPException(403, "无权限")
+
+
+def is_banned(device_id: str | None) -> str | None:
+    """返回该设备是否被封禁；封禁返回原因，否则 None"""
+    if not device_id:
+        return None
+    conn = get_db()
+    row = conn.execute("SELECT reason FROM banned_devices WHERE device_id = ?", (device_id,)).fetchone()
+    conn.close()
+    return row["reason"] if row else None
+
+
+def auto_hide_if_reported(target_type: str, target_id: str):
+    """举报计数达到阈值 → 帖子自动下架（hidden=1）"""
+    if target_type != "post":
+        return
+    conn = get_db()
+    n = conn.execute("SELECT COUNT(*) FROM reports WHERE target_type='post' AND target_id=?", (target_id,)).fetchone()[0]
+    if n >= AUTO_HIDE_REPORTS:
+        conn.execute("UPDATE posts SET hidden = 1 WHERE id = ?", (target_id,))
+        conn.commit()
+        audit_log("auto_hide", f"post={target_id} reports={n}")
+    conn.close()
+
+
+# 管理端：举报列表
+@app.get("/api/admin/reports")
+def admin_reports(x_admin_token: str = Header(default="", alias="X-Admin-Token"), limit: int = 50, offset: int = 0):
+    require_admin(x_admin_token)
+    limit = max(1, min(limit, 100))
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT r.*, p.title AS post_title, p.hidden AS post_hidden "
+        "FROM reports r LEFT JOIN posts p ON r.target_type='post' AND r.target_id=p.id "
+        "ORDER BY r.created_at DESC LIMIT ? OFFSET ?", (limit, offset)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# 管理端：帖子列表（可看含下架的）
+@app.get("/api/admin/posts")
+def admin_posts(x_admin_token: str = Header(default="", alias="X-Admin-Token"), hidden: Optional[int] = None, limit: int = 50, offset: int = 0):
+    require_admin(x_admin_token)
+    limit = max(1, min(limit, 100))
+    conn = get_db()
+    if hidden is None:
+        rows = conn.execute("SELECT * FROM posts ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM posts WHERE hidden = ? ORDER BY created_at DESC LIMIT ? OFFSET ?", (hidden, limit, offset)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# 管理端：恢复被下架的帖子
+@app.post("/api/admin/posts/{post_id}/restore")
+def admin_restore_post(post_id: str, x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    conn = get_db()
+    cur = conn.execute("UPDATE posts SET hidden = 0 WHERE id = ?", (post_id,))
+    conn.commit()
+    conn.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "帖子不存在")
+    audit_log("admin_restore", f"post={post_id}")
+    return {"status": "ok"}
+
+
+# 管理端：删除帖子（任意）
+@app.delete("/api/admin/posts/{post_id}")
+def admin_delete_post(post_id: str, x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    conn = get_db()
+    conn.execute("DELETE FROM posts WHERE id = ?", (post_id,))
+    conn.execute("DELETE FROM likes WHERE post_id = ?", (post_id,))
+    conn.commit()
+    conn.close()
+    audit_log("admin_delete", f"post={post_id}")
+    return {"status": "ok"}
+
+
+# 管理端：封禁设备
+class BanIn(BaseModel):
+    device_id: str
+    reason: str = "违规"
+
+
+@app.post("/api/admin/ban")
+def admin_ban(data: BanIn, x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    if not data.device_id.strip():
+        raise HTTPException(400, "device_id 不能为空")
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO banned_devices (device_id, reason, created_at) VALUES (?,?,?) "
+        "ON CONFLICT(device_id) DO UPDATE SET reason = excluded.reason",
+        (data.device_id.strip(), data.reason.strip() or "违规", datetime.utcnow().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    audit_log("admin_ban", f"device={data.device_id.strip()[:8]}… reason={data.reason.strip()[:20]}")
+    return {"status": "ok"}
+
+
+# 管理端：解封设备
+@app.post("/api/admin/unban")
+def admin_unban(data: BanIn, x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    conn = get_db()
+    conn.execute("DELETE FROM banned_devices WHERE device_id = ?", (data.device_id.strip(),))
+    conn.commit()
+    conn.close()
+    audit_log("admin_unban", f"device={data.device_id.strip()[:8]}…")
+    return {"status": "ok"}
 
 
 @app.post("/api/upload")
