@@ -8,7 +8,7 @@
 #   或置于 Nginx/Caddy 反代后并启用 TLS。
 # 审计日志：server.log（删帖/举报/限流拦截留痕）
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
@@ -490,6 +490,27 @@ def create_report(report: ReportIn):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "categories": CATEGORIES}
+
+
+@app.get("/api/admin/export")
+def admin_export(x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    """管理端全量备份导出（JSON）：posts/comments/likes/reports + uploads 清单。
+    需环境变量 ADMIN_TOKEN 匹配，否则 403。数据含 device_id（备份用），不对外公开。"""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected or x_admin_token != expected:
+        raise HTTPException(403, "无权限")
+    conn = get_db()
+    data = {
+        "exported_at": datetime.utcnow().isoformat(),
+        "posts": [dict(r) for r in conn.execute("SELECT * FROM posts ORDER BY created_at").fetchall()],
+        "comments": [dict(r) for r in conn.execute("SELECT * FROM comments ORDER BY created_at").fetchall()],
+        "likes": [dict(r) for r in conn.execute("SELECT * FROM likes ORDER BY created_at").fetchall()],
+        "reports": [dict(r) for r in conn.execute("SELECT * FROM reports ORDER BY created_at").fetchall()],
+        "uploads": sorted(os.listdir(UPLOAD_DIR)) if os.path.isdir(UPLOAD_DIR) else [],
+    }
+    conn.close()
+    audit_log("admin_export", f"posts={len(data['posts'])} comments={len(data['comments'])} uploads={len(data['uploads'])}")
+    return data
 
 
 @app.post("/api/upload")
