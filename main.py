@@ -11,7 +11,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
@@ -681,6 +681,41 @@ def admin_restore_post(post_id: str, x_admin_token: str = Header(default="", ali
         raise HTTPException(404, "帖子不存在")
     audit_log("admin_restore", f"post={post_id}")
     return {"status": "ok"}
+
+
+# 管理端：手动下架帖子
+@app.post("/api/admin/posts/{post_id}/hide")
+def admin_hide_post(post_id: str, x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    conn = get_db()
+    cur = conn.execute("UPDATE posts SET hidden = 1 WHERE id = ?", (post_id,))
+    conn.commit()
+    conn.close()
+    if cur.rowcount == 0:
+        raise HTTPException(404, "帖子不存在")
+    audit_log("admin_hide", f"post={post_id}")
+    return {"status": "ok"}
+
+
+# 管理端：封禁列表
+@app.get("/api/admin/banned")
+def admin_banned(x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM banned_devices ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# 管理台页面（可视化运营界面）
+@app.get("/admin", include_in_schema=False)
+def admin_page():
+    path = os.path.join(os.path.dirname(__file__), "admin.html")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except FileNotFoundError:
+        return HTMLResponse("<h1>admin.html 缺失</h1>", status_code=500)
 
 
 # 管理端：删除帖子（任意）
