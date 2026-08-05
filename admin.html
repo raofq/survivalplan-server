@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>生存计划 · 圈子管理台</title>
+<style>
+  :root { --bg:#f5f5f7; --card:#fff; --border:#e5e5ea; --text:#1d1d1f; --muted:#86868b; --accent:#ff9500; --danger:#ff3b30; --ok:#34c759; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:-apple-system,"PingFang SC",sans-serif; background:var(--bg); color:var(--text); padding:20px; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:16px; }
+  .token-bar { display:flex; gap:8px; margin-bottom:16px; }
+  input[type=text], input[type=password], select, textarea {
+    padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:14px; background:#fff; flex:1; min-width:0;
+  }
+  button {
+    padding:8px 16px; border:none; border-radius:8px; font-size:14px; cursor:pointer; background:var(--accent); color:#fff; white-space:nowrap;
+  }
+  button.secondary { background:#e5e5ea; color:var(--text); }
+  button.danger { background:var(--danger); }
+  button.ok { background:var(--ok); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .tabs { display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap; }
+  .tab { padding:8px 16px; border-radius:20px; background:#e5e5ea; color:var(--text); border:none; cursor:pointer; font-size:14px; }
+  .tab.active { background:var(--accent); color:#fff; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; margin-bottom:12px; }
+  .card h3 { font-size:15px; margin-bottom:8px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px; }
+  .meta { color:var(--muted); font-size:12px; }
+  .content { font-size:14px; margin:4px 0; }
+  .badge { font-size:11px; padding:2px 8px; border-radius:10px; background:#e5e5ea; color:var(--muted); }
+  .badge.warn { background:#fff3e0; color:#e65100; }
+  .badge.hidden { background:#ffe0e0; color:var(--danger); }
+  .actions { display:flex; gap:8px; margin-top:8px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; }
+  .empty { color:var(--muted); text-align:center; padding:24px; font-size:13px; }
+  .toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#1d1d1f; color:#fff; padding:10px 20px; border-radius:8px; font-size:14px; opacity:0; transition:opacity .3s; z-index:99; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<h1>📋 生存计划 · 圈子管理台</h1>
+<div class="sub">审核预控 · 封禁 · 公告 · 数据操作（所有操作需 ADMIN_TOKEN）</div>
+
+<div class="token-bar">
+  <input type="password" id="token" placeholder="ADMIN_TOKEN（保存在本浏览器）">
+  <button onclick="saveToken()">保存</button>
+</div>
+
+<div class="tabs">
+  <button class="tab active" data-tab="reports" onclick="switchTab('reports')">举报审核</button>
+  <button class="tab" data-tab="hidden" onclick="switchTab('hidden')">已下架</button>
+  <button class="tab" data-tab="banned" onclick="switchTab('banned')">封禁管理</button>
+  <button class="tab" data-tab="announce" onclick="switchTab('announce')">公告</button>
+</div>
+
+<div id="reports" class="panel"></div>
+<div id="hidden" class="panel" style="display:none"></div>
+<div id="banned" class="panel" style="display:none"></div>
+<div id="announce" class="panel" style="display:none"></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = location.origin + '/api';
+let token = localStorage.getItem('admin_token') || '';
+if (token) document.getElementById('token').value = token;
+let currentTab = 'reports';
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+function saveToken() {
+  token = document.getElementById('token').value.trim();
+  localStorage.setItem('admin_token', token);
+  toast(token ? 'Token 已保存' : 'Token 已清除');
+  load(currentTab);
+}
+function switchTab(t) {
+  currentTab = t;
+  document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
+  document.querySelectorAll('.panel').forEach(p => p.style.display = 'none');
+  document.getElementById(t).style.display = '';
+  load(t);
+}
+async function apiFetch(path, opts = {}) {
+  const headers = { 'X-Admin-Token': token, ...(opts.headers || {}) };
+  if (opts.body) headers['Content-Type'] = 'application/json';
+  const res = await fetch(API + path, { ...opts, headers });
+  if (res.status === 403) { toast('Token 无效或未设置'); throw new Error('403'); }
+  if (!res.ok) { const d = await res.json().catch(() => ({})); toast(d.detail || '请求失败'); throw new Error(res.status); }
+  return res.status === 200 ? res.json() : null;
+}
+function esc(s) { return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function load(tab) {
+  try {
+    if (tab === 'reports') await loadReports();
+    else if (tab === 'hidden') await loadHidden();
+    else if (tab === 'banned') await loadBanned();
+    else if (tab === 'announce') await loadAnnounce();
+  } catch (e) {}
+}
+
+async function loadReports() {
+  const data = await apiFetch('/admin/reports?limit=50');
+  const el = document.getElementById('reports');
+  if (!data || !data.length) { el.innerHTML = '<div class="empty">暂无举报</div>'; return; }
+  el.innerHTML = data.map(r => `
+    <div class="card">
+      <div class="row">
+        <span class="badge ${r.post_hidden ? 'hidden' : ''}">${r.post_hidden ? '已下架' : '正常'}</span>
+        <span class="badge">${esc(r.target_type)}</span>
+        <span class="meta">${esc(r.reason)} · 举报人 ${esc(r.reported_by)} · ${esc((r.created_at || '').slice(0, 16).replace('T', ' '))}</span>
+      </div>
+      <div class="content">${r.post_title ? '帖子：' + esc(r.post_title) : '目标：' + esc(r.target_id)}</div>
+      <div class="actions">
+        ${r.target_type === 'post' ? (r.post_hidden ? `<button class="ok" onclick="restorePost('${r.target_id}')">恢复</button>` : `<button onclick="hidePost('${r.target_id}')">下架</button>`) : ''}
+        <button class="danger" onclick="adminDelete('${r.target_id}')">删除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function loadHidden() {
+  const data = await apiFetch('/admin/posts?hidden=1&limit=50');
+  const el = document.getElementById('hidden');
+  if (!data || !data.length) { el.innerHTML = '<div class="empty">暂无下架帖子</div>'; return; }
+  el.innerHTML = data.map(p => `
+    <div class="card">
+      <div class="row">
+        <span class="badge">${esc(p.category)}</span>
+        <span class="meta">${esc((p.created_at || '').slice(0, 16).replace('T', ' '))}</span>
+      </div>
+      <div class="content"><b>${esc(p.title)}</b> — ${esc(p.content).slice(0, 80)}</div>
+      <div class="actions">
+        <button class="ok" onclick="restorePost('${p.id}')">恢复</button>
+        <button class="danger" onclick="adminDelete('${p.id}')">删除</button>
+      </div>
+    </div>`).join('');
+}
+
+async function loadBanned() {
+  const el = document.getElementById('banned');
+  let data = [];
+  try { data = await apiFetch('/admin/banned'); } catch (e) {}
+  const list = (data && data.length)
+    ? data.map(b => `
+      <div class="card">
+        <div class="row">
+          <span class="badge warn">封禁</span>
+          <span class="content">${esc(b.device_id)}</span>
+          <span class="meta">${esc(b.reason)} · ${esc((b.created_at || '').slice(0, 16).replace('T', ' '))}</span>
+        </div>
+        <div class="actions"><button class="ok" onclick="unban('${esc(b.device_id)}')">解封</button></div>
+      </div>`).join('')
+    : '<div class="empty">暂无封禁</div>';
+  el.innerHTML = `
+    <div class="card">
+      <h3>封禁设备</h3>
+      <div class="row">
+        <input type="text" id="banDevice" placeholder="device_id">
+        <input type="text" id="banReason" placeholder="原因（默认：违规）" style="flex:.5">
+        <button onclick="ban()">封禁</button>
+      </div>
+    </div>
+    ${list}`;
+}
+
+async function loadAnnounce() {
+  const el = document.getElementById('announce');
+  let cur = null;
+  try { cur = await apiFetch('/announcement'); } catch (e) {}
+  el.innerHTML = `
+    <div class="card">
+      <h3>当前公告</h3>
+      ${cur ? `<div class="row"><span class="badge ${cur.level === 'maintenance' ? 'warn' : ''}">${cur.level === 'maintenance' ? '维护' : '普通'}</span></div>
+        <div class="content"><b>${esc(cur.title)}</b></div>
+        <div class="content">${esc(cur.content)}</div>
+        <div class="actions"><button class="danger" onclick="clearAnnounce()">撤销公告</button></div>`
+        : '<div class="empty">当前无公告</div>'}
+    </div>
+    <div class="card">
+      <h3>发布公告</h3>
+      <div class="row"><input type="text" id="annTitle" placeholder="标题（如：服务升级通知）"></div>
+      <div class="row"><textarea id="annContent" placeholder="内容（如：8月6日 22:00-23:00 系统维护，期间圈子暂时不可用）" rows="3" style="flex:1"></textarea></div>
+      <div class="row">
+        <select id="annLevel"><option value="normal">普通公告</option><option value="maintenance">维护公告（橙色醒目）</option></select>
+        <input type="text" id="annExpires" placeholder="过期时间（可选，如 2026-08-06T23:00:00）" style="flex:.6">
+        <button onclick="publishAnnounce()">发布</button>
+      </div>
+    </div>`;
+}
+
+async function restorePost(id) {
+  await apiFetch('/admin/posts/' + id + '/restore', { method: 'POST' });
+  toast('已恢复'); load(currentTab);
+}
+async function hidePost(id) {
+  await apiFetch('/admin/posts/' + id + '/hide', { method: 'POST' });
+  toast('已下架'); load(currentTab);
+}
+async function adminDelete(id) {
+  if (!confirm('确认删除该内容？不可恢复')) return;
+  await apiFetch('/admin/posts/' + id, { method: 'DELETE' });
+  toast('已删除'); load(currentTab);
+}
+async function ban() {
+  const device_id = document.getElementById('banDevice').value.trim();
+  const reason = document.getElementById('banReason').value.trim() || '违规';
+  if (!device_id) { toast('请填写 device_id'); return; }
+  await apiFetch('/admin/ban', { method: 'POST', body: JSON.stringify({ device_id, reason }) });
+  toast('已封禁'); load('banned');
+}
+async function unban(device_id) {
+  await apiFetch('/admin/unban', { method: 'POST', body: JSON.stringify({ device_id }) });
+  toast('已解封'); load('banned');
+}
+async function publishAnnounce() {
+  const title = document.getElementById('annTitle').value.trim();
+  const content = document.getElementById('annContent').value.trim();
+  const level = document.getElementById('annLevel').value;
+  const expires_at = document.getElementById('annExpires').value.trim() || null;
+  if (!title || !content) { toast('请填写标题和内容'); return; }
+  await apiFetch('/admin/announcements', { method: 'POST', body: JSON.stringify({ title, content, level, expires_at }) });
+  toast('公告已发布'); load('announce');
+}
+async function clearAnnounce() {
+  if (!confirm('确认撤销当前公告？')) return;
+  await apiFetch('/admin/announcements', { method: 'DELETE' });
+  toast('公告已撤销'); load('announce');
+}
+
+if (token) load('reports');
+</script>
+</body>
+</html>
