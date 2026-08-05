@@ -54,12 +54,14 @@
   <button class="tab active" data-tab="reports" onclick="switchTab('reports')">举报审核</button>
   <button class="tab" data-tab="hidden" onclick="switchTab('hidden')">已下架</button>
   <button class="tab" data-tab="banned" onclick="switchTab('banned')">封禁管理</button>
+  <button class="tab" data-tab="users" onclick="switchTab('users')">用户监控</button>
   <button class="tab" data-tab="announce" onclick="switchTab('announce')">公告</button>
 </div>
 
 <div id="reports" class="panel"></div>
 <div id="hidden" class="panel" style="display:none"></div>
 <div id="banned" class="panel" style="display:none"></div>
+<div id="users" class="panel" style="display:none"></div>
 <div id="announce" class="panel" style="display:none"></div>
 
 <div class="toast" id="toast"></div>
@@ -103,8 +105,69 @@ async function load(tab) {
     if (tab === 'reports') await loadReports();
     else if (tab === 'hidden') await loadHidden();
     else if (tab === 'banned') await loadBanned();
+    else if (tab === 'users') await loadUsers();
     else if (tab === 'announce') await loadAnnounce();
   } catch (e) {}
+}
+
+async function loadUsers() {
+  const el = document.getElementById('users');
+  el.innerHTML = `
+    <div class="card">
+      <div class="row">
+        <input type="text" id="userQuery" placeholder="按 device_id 检索" style="flex:.4">
+        <select id="userSort" style="flex:.2">
+          <option value="posts">按发帖数</option>
+          <option value="comments">按评论数</option>
+          <option value="reported">按被举报数</option>
+          <option value="active">按最近活跃</option>
+        </select>
+        <button onclick="loadUsersList()">查询</button>
+      </div>
+      <div class="meta" id="userCount"></div>
+    </div>
+    <div id="usersList"></div>`;
+  await loadUsersList();
+}
+
+async function loadUsersList() {
+  const query = (document.getElementById('userQuery') || {}).value || '';
+  const sort = (document.getElementById('userSort') || {}).value || 'posts';
+  const data = await apiFetch('/admin/users?limit=200&query=' + encodeURIComponent(query) + '&sort=' + sort);
+  const listEl = document.getElementById('usersList');
+  const countEl = document.getElementById('userCount');
+  if (!data || !data.users || !data.users.length) {
+    listEl.innerHTML = '<div class="empty">暂无用户数据</div>';
+    if (countEl) countEl.textContent = '共 0 个设备';
+    return;
+  }
+  if (countEl) countEl.textContent = '共 ' + data.total + ' 个设备';
+  listEl.innerHTML = `
+    <div class="card" style="overflow-x:auto">
+      <table>
+        <tr><th>device_id</th><th>发帖</th><th>评论</th><th>获赞</th><th>被举报</th><th>最近活跃</th><th>状态</th><th>操作</th></tr>
+        ${data.users.map(u => `
+          <tr>
+            <td style="font-family:monospace;font-size:12px">${esc(u.device_id)}</td>
+            <td>${u.posts}</td>
+            <td>${u.comments}</td>
+            <td>${u.likes_received}</td>
+            <td>${u.reported ? '<span style="color:var(--danger);font-weight:600">' + u.reported + '</span>' : 0}</td>
+            <td class="meta">${esc((u.last_active || '').slice(0, 16).replace('T', ' '))}</td>
+            <td>${u.banned ? '<span class="badge hidden">已封禁</span>' : '<span class="badge">正常</span>'}</td>
+            <td>${u.banned
+              ? `<button class="ok" style="padding:4px 10px;font-size:12px" onclick="unban('${esc(u.device_id)}')">解封</button>`
+              : `<button class="danger" style="padding:4px 10px;font-size:12px" onclick="banFromUser('${esc(u.device_id)}')">封禁</button>`}</td>
+          </tr>`).join('')}
+      </table>
+    </div>`;
+}
+
+function banFromUser(device_id) {
+  document.getElementById('banDevice').value = device_id;
+  document.getElementById('banReason').value = '刷屏/广告';
+  switchTab('banned');
+  toast('已填入 device_id，确认封禁原因后点击封禁');
 }
 
 async function loadReports() {
