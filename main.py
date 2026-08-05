@@ -707,6 +707,51 @@ def admin_banned(x_admin_token: str = Header(default="", alias="X-Admin-Token"))
     return [dict(r) for r in rows]
 
 
+# 管理端：用户数据监控——按 device_id 聚合行为（发帖/评论/获赞/被举报/活跃）
+# 目的：识别广告/诈骗/刷屏账号（与发帖限次、工作帖安全机制配套）
+@app.get("/api/admin/users")
+def admin_users(x_admin_token: str = Header(default="", alias="X-Admin-Token"),
+                limit: int = 100, offset: int = 0, query: Optional[str] = None,
+                sort: str = "posts"):
+    require_admin(x_admin_token)
+    limit = max(1, min(limit, 200))
+    conn = get_db()
+    devices = [r["device_id"] for r in conn.execute(
+        "SELECT device_id FROM posts WHERE device_id IS NOT NULL "
+        "UNION SELECT device_id FROM comments WHERE device_id IS NOT NULL"
+    ).fetchall()]
+    users = []
+    for dev in devices:
+        p = conn.execute("SELECT COUNT(*), MAX(created_at) FROM posts WHERE device_id = ?", (dev,)).fetchone()
+        c = conn.execute("SELECT COUNT(*), MAX(created_at) FROM comments WHERE device_id = ?", (dev,)).fetchone()
+        lk_given = conn.execute("SELECT COUNT(*) FROM likes WHERE device_id = ?", (dev,)).fetchone()[0]
+        lk_recv = conn.execute(
+            "SELECT COUNT(*) FROM likes l JOIN posts p ON l.post_id = p.id WHERE p.device_id = ?", (dev,)).fetchone()[0]
+        rep = conn.execute(
+            "SELECT COUNT(*) FROM reports r JOIN posts p ON r.target_id = p.id AND r.target_type='post' WHERE p.device_id = ?", (dev,)).fetchone()[0]
+        banned = conn.execute("SELECT reason FROM banned_devices WHERE device_id = ?", (dev,)).fetchone()
+        actives = [t for t in (p[1], c[1]) if t]
+        users.append({
+            "device_id": dev,
+            "posts": p[0], "comments": c[0],
+            "likes_given": lk_given, "likes_received": lk_recv,
+            "reported": rep,
+            "last_active": max(actives) if actives else None,
+            "banned": bool(banned), "ban_reason": banned["reason"] if banned else None,
+        })
+    conn.close()
+    # 检索：device_id 模糊匹配
+    if query:
+        users = [u for u in users if query.lower() in u["device_id"].lower()]
+    # 排序
+    keymap = {"posts": "posts", "comments": "comments", "reported": "reported", "active": "last_active"}
+    key = keymap.get(sort, "posts")
+    users.sort(key=lambda u: u[key] if u[key] is not None else "", reverse=True)
+    total = len(users)
+    page = users[offset:offset + limit]
+    return {"total": total, "users": page}
+
+
 # 管理台页面（可视化运营界面）
 @app.get("/admin", include_in_schema=False)
 def admin_page():
