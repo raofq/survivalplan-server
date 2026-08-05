@@ -183,6 +183,17 @@ def get_db():
             created_at TEXT NOT NULL
         )
     """)
+    # 公告表（站内信：标题/内容/级别/过期时间）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS announcements (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT 'normal',
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        )
+    """)
     return conn
 
 
@@ -510,6 +521,67 @@ def create_report(report: ReportIn):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "categories": CATEGORIES}
+
+
+# ============ 公告（站内信）============
+# 当前有效公告（未过期，最多 1 条最新）；无则返回 null
+@app.get("/api/announcement")
+def get_announcement():
+    conn = get_db()
+    now = datetime.utcnow().isoformat()
+    rows = conn.execute(
+        "SELECT * FROM announcements WHERE expires_at IS NULL OR expires_at > ? "
+        "ORDER BY created_at DESC LIMIT 1", (now,)
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    d = dict(rows[0])
+    return {"title": d["title"], "content": d["content"], "level": d["level"], "created_at": d["created_at"]}
+
+
+class AnnouncementIn(BaseModel):
+    title: str
+    content: str
+    level: str = "normal"          # normal | maintenance
+    expires_at: Optional[str] = None  # ISO 时间，过期自动失效
+
+
+# 管理端：发布公告（发布新公告自动作废旧公告——同一时间只显示一条）
+@app.post("/api/admin/announcements")
+def admin_create_announcement(data: AnnouncementIn, x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    if not data.title.strip() or not data.content.strip():
+        raise HTTPException(400, "标题和内容不能为空")
+    if data.level not in ("normal", "maintenance"):
+        raise HTTPException(400, "无效级别")
+    conn = get_db()
+    # 作废旧公告
+    conn.execute("UPDATE announcements SET expires_at = ? WHERE expires_at IS NULL OR expires_at > ?",
+                 (datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+    aid = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO announcements (id, title, content, level, created_at, expires_at) VALUES (?,?,?,?,?,?)",
+        (aid, data.title.strip(), data.content.strip(), data.level,
+         datetime.utcnow().isoformat(), data.expires_at),
+    )
+    conn.commit()
+    conn.close()
+    audit_log("announcement", f"level={data.level} title={data.title.strip()[:20]}")
+    return {"status": "ok", "id": aid}
+
+
+# 管理端：撤销当前公告
+@app.delete("/api/admin/announcements")
+def admin_clear_announcement(x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    require_admin(x_admin_token)
+    conn = get_db()
+    now = datetime.utcnow().isoformat()
+    conn.execute("UPDATE announcements SET expires_at = ? WHERE expires_at IS NULL OR expires_at > ?", (now, now))
+    conn.commit()
+    conn.close()
+    audit_log("announcement_clear", "")
+    return {"status": "ok"}
 
 
 @app.get("/api/admin/export")
