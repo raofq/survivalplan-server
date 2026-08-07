@@ -1004,5 +1004,70 @@ PRIVACY_HTML = """<!DOCTYPE html>
 
 
 @app.get("/privacy", response_class=HTMLResponse)
-def privacy_page():
+def privacy_page(lang: str = "zh"):
+    if lang.lower() in ("en", "en-us"):
+        return PRIVACY_HTML_EN
     return PRIVACY_HTML
+
+
+PRIVACY_HTML_EN = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Survival Plan - Privacy Policy</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; color: #222; line-height: 1.7; }
+  h1 { font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 12px; }
+  h2 { font-size: 18px; margin-top: 28px; color: #333; }
+  p, li { font-size: 15px; }
+  .updated { color: #888; font-size: 13px; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #eee; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Survival Plan Privacy Policy</h1>
+<p class="updated">Last updated: August 7, 2026</p>
+
+<h2>1. Information We Collect</h2>
+<p>"Survival Plan" is provided by an individual developer. To provide our services, we collect the following information:</p>
+<ul>
+  <li><b>Device Identifier</b>: An anonymous device ID (randomly generated, containing no personal identity information), used for community abuse prevention and report handling.</li>
+  <li><b>Community Content</b>: Posts, comments, likes, and check-in records you publish in the "Circle" community, as well as images you upload (for community display).</li>
+  <li><b>Usage Data</b>: Anonymous app feature usage statistics (such as page views and feature clicks), used only to improve the product and containing no personally identifiable information.</li>
+</ul>
+
+<h2>2. What We Do NOT Collect</h2>
+<p>The following data is <b>stored only on your device</b> and is never uploaded to our servers:</p>
+<ul>
+  <li>Expense records, budget data, simulator parameters and results</li>
+  <li>Your personal profile information (income, savings, family situation, etc.)</li>
+</ul>
+
+<h2>3. How We Use Information</h2>
+<ul>
+  <li>The anonymous device ID is used for identity verification and abuse prevention in community features (posting, liking, reporting).</li>
+  <li>Community content is used only for community display and interaction.</li>
+  <li>We do not sell, rent, or share your personal information with any third party.</li>
+</ul>
+
+<h2>4. Security and Scam Prevention</h2>
+<p>Content published in the Circle is filtered for sensitive words and job-posting scam detection; contact information is masked when displayed. We provide a reporting mechanism — content that receives multiple reports is automatically removed, and offending devices may be banned.</p>
+
+<h2>5. Data Deletion</h2>
+<ul>
+  <li>You can delete your own posts at any time within the app.</li>
+  <li>To delete all data or deactivate your account, please contact the developer through the contact information below. We will process your request within 7 business days.</li>
+</ul>
+
+<h2>6. Policy Updates</h2>
+<p>We may update this privacy policy from time to time. For significant changes, we will notify you within the app. Continued use of the app constitutes acceptance of the updated policy.</p>
+
+<h2>7. Contact Us</h2>
+<p>If you have any privacy-related questions, please contact us via GitHub Issues:<br>
+<a href="https://github.com/raofq/survivalplan/issues">https://github.com/raofq/survivalplan/issues</a></p>
+
+<div class="footer">© 2026 Survival Plan. All rights reserved.</div>
+</body>
+</html>
+"""
