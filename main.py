@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, HTMLResponse
 from pydantic import BaseModel
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import os
 import uuid
@@ -149,6 +149,16 @@ def get_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id TEXT,
+            event TEXT NOT NULL,
+            params TEXT,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at)")
     # 迁移：老库补 image_url / image_urls 列
     cols = [r[1] for r in conn.execute("PRAGMA table_info(posts)").fetchall()]
     if "image_url" not in cols:
@@ -605,6 +615,105 @@ def admin_export(x_admin_token: str = Header(default="", alias="X-Admin-Token"))
     return data
 
 
+@app.get("/api/admin/stats")
+def admin_stats(x_admin_token: str = Header(default="", alias="X-Admin-Token")):
+    """管理端数据统计：总量、近7天活跃/发帖/评论/点赞趋势、分类分布、活跃设备Top。
+    活跃设备 = 当日有发帖/评论/点赞记录的独立 device_id 去重。"""
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected or x_admin_token != expected:
+        raise HTTPException(403, "无权限")
+    conn = get_db()
+
+    def rows(sql: str):
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    # 总量
+    totals = {
+        "posts": conn.execute("SELECT COUNT(*) c FROM posts").fetchone()["c"],
+        "comments": conn.execute("SELECT COUNT(*) c FROM comments").fetchone()["c"],
+        "likes": conn.execute("SELECT COUNT(*) c FROM likes").fetchone()["c"],
+        "uploads": len(os.listdir(UPLOAD_DIR)) if os.path.isdir(UPLOAD_DIR) else 0,
+    }
+
+    # 近 7 天（含今天）按日聚合
+    days = [(datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(6, -1, -1)]
+    trend = []
+    for d in days:
+        def cnt(sql, day=d):
+            return conn.execute(sql, (day,)).fetchone()["c"]
+        post_cnt = cnt("SELECT COUNT(*) c FROM posts WHERE substr(created_at,1,10)=?")
+        cmt_cnt = cnt("SELECT COUNT(*) c FROM comments WHERE substr(created_at,1,10)=?")
+        like_cnt = cnt("SELECT COUNT(*) c FROM likes WHERE substr(created_at,1,10)=?")
+        active = conn.execute(
+            "SELECT COUNT(DISTINCT device_id) c FROM ("
+            "SELECT device_id FROM posts WHERE substr(created_at,1,10)=? "
+            "UNION SELECT device_id FROM comments WHERE substr(created_at,1,10)=? "
+            "UNION SELECT device_id FROM likes WHERE substr(created_at,1,10)=?)",
+            (d, d, d)).fetchone()["c"]
+        trend.append({"date": d, "posts": post_cnt, "comments": cmt_cnt, "likes": like_cnt, "active_devices": active})
+
+    # 分类分布
+    categories = rows("SELECT category, COUNT(*) c FROM posts GROUP BY category ORDER BY c DESC")
+
+    # 活跃设备 Top10（发帖+评论总量）
+    top_devices = conn.execute(
+        "SELECT device_id, COUNT(*) c FROM ("
+        "SELECT device_id FROM posts UNION ALL SELECT device_id FROM comments) "
+        "GROUP BY device_id ORDER BY c DESC LIMIT 10").fetchall()
+    top_devices = [{"device_id": r["device_id"], "actions": r["c"]} for r in top_devices]
+
+    conn.close()
+    audit_log("admin_stats", f"trend_days={len(trend)} posts_total={totals['posts']}")
+    conn = get_db()  # 复用连接：事件排行查询（避免已 close 的连接）
+    event_rank, events_daily = admin_stats_events(conn)
+    conn.close()
+    return {
+        "totals": totals, "trend": trend, "categories": categories, "top_devices": top_devices,
+        "event_rank": event_rank, "events_daily": events_daily,
+    }
+
+
+# ---------- 功能使用统计（App 埋点） ----------
+class AnalyticsIn(BaseModel):
+    device_id: str
+    events: List[dict]  # [{"event": "view_tab", "params": {...}}, ...]
+
+
+@app.post("/api/analytics")
+def receive_analytics(data: AnalyticsIn):
+    """App 端批量埋点上报：每设备每请求 ≤ 50 条；只记事件名+轻量参数（匿名设备ID，无用户内容）。"""
+    conn = get_db()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    evs = data.events[:50]
+    n = 0
+    for e in evs:
+        event = str(e.get("event", ""))[:64]
+        if not event:
+            continue
+        params = e.get("params")
+        params_json = json.dumps(params, ensure_ascii=False)[:500] if isinstance(params, dict) else None
+        conn.execute(
+            "INSERT INTO events (device_id, event, params, created_at) VALUES (?,?,?,?)",
+            (data.device_id[:64], event, params_json, now),
+        )
+        n += 1
+    conn.commit()
+    conn.close()
+    return {"received": n}
+
+
+def admin_stats_events(conn, days: int = 7):
+    """近 N 天事件排行 + 每日事件量（供 /api/admin/stats 扩展）。"""
+    since = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    rank = [dict(r) for r in conn.execute(
+        "SELECT event, COUNT(*) c FROM events WHERE substr(created_at,1,10) >= ? "
+        "GROUP BY event ORDER BY c DESC LIMIT 20", (since,)).fetchall()]
+    daily = [dict(r) for r in conn.execute(
+        "SELECT substr(created_at,1,10) d, COUNT(*) c FROM events WHERE substr(created_at,1,10) >= ? "
+        "GROUP BY d ORDER BY d", (since,)).fetchall()]
+    return rank, daily
+
+
 # ============ 审核预控 ============
 # 举报自动下架阈值（同一目标被举报达 N 次 → 隐藏）
 AUTO_HIDE_REPORTS = 2
@@ -829,3 +938,71 @@ async def upload_image(file: UploadFile = File(...)):
     with open(path, "wb") as f:
         f.write(data)
     return {"url": f"/uploads/{fname}"}
+
+
+PRIVACY_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>生存计划 - 隐私政策</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; color: #222; line-height: 1.7; }
+  h1 { font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 12px; }
+  h2 { font-size: 18px; margin-top: 28px; color: #333; }
+  p, li { font-size: 15px; }
+  .updated { color: #888; font-size: 13px; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #eee; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>生存计划 隐私政策</h1>
+<p class="updated">更新日期：2026年8月7日</p>
+
+<h2>一、我们收集哪些信息</h2>
+<p>「生存计划」由个人开发者提供。为向你提供服务，我们会收集以下信息：</p>
+<ul>
+  <li><b>设备标识</b>：匿名设备 ID（随机生成，不包含任何个人身份信息），用于社区防滥用与举报处理。</li>
+  <li><b>社区内容</b>：你在「圈子」中发布的帖子、评论、点赞、打卡记录，以及上传的图片（用于社区展示）。</li>
+  <li><b>使用数据</b>：应用功能使用统计（如页面访问、功能点击），仅用于改进产品，不包含个人身份信息。</li>
+</ul>
+
+<h2>二、我们不会收集什么</h2>
+<p>以下数据<b>仅保存在你的设备本地</b>，绝不上传服务器：</p>
+<ul>
+  <li>记账记录、预算数据、模拟器参数与结果</li>
+  <li>个人信息档案（收入、积蓄、家庭情况等）</li>
+</ul>
+
+<h2>三、信息的使用</h2>
+<ul>
+  <li>匿名设备 ID 用于社区功能（发帖、点赞、举报）的身份识别与防滥用限制。</li>
+  <li>社区内容仅用于社区展示与互动。</li>
+  <li>我们不会向任何第三方出售、出租或共享你的个人信息。</li>
+</ul>
+
+<h2>四、安全与防骗机制</h2>
+<p>圈子内发布的内容会经过风险词过滤与招聘信息防骗检测；联系方式展示时会进行脱敏处理。我们设有举报机制，被多次举报的内容会被自动下架，违规设备会被封禁。</p>
+
+<h2>五、数据删除</h2>
+<ul>
+  <li>你可以在 App 内随时删除自己发布的帖子。</li>
+  <li>如需删除全部数据或注销账号，请通过下方联系方式联系开发者，我们将在 7 个工作日内处理。</li>
+</ul>
+
+<h2>六、政策更新</h2>
+<p>我们可能会不时更新本隐私政策。重大变更时，我们会在 App 内通知你。继续使用本应用即表示你接受更新后的政策。</p>
+
+<h2>七、联系我们</h2>
+<p>如有任何隐私相关问题，请通过 GitHub Issues 联系我们：<br>
+<a href="https://github.com/raofq/survivalplan/issues">https://github.com/raofq/survivalplan/issues</a></p>
+
+<div class="footer">© 2026 生存计划。保留所有权利。</div>
+</body>
+</html>
+"""
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page():
+    return PRIVACY_HTML
