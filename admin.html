@@ -34,6 +34,12 @@
   .badge.hidden { background:#ffe0e0; color:var(--danger); }
   .actions { display:flex; gap:8px; margin-top:8px; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
+  .stat-row { display:flex; align-items:center; gap:10px; padding:4px 0; font-size:12px; }
+  .stat-date { width:52px; color:var(--muted); flex-shrink:0; }
+  .stat-bars { flex:1; display:flex; flex-direction:column; gap:3px; }
+  .stat-bar { height:8px; background:rgba(0,0,0,.06); border-radius:4px; overflow:hidden; }
+  .bar-inner { height:100%; border-radius:4px; min-width:2px; transition:width .4s; }
+  .stat-num-sm { width:76px; text-align:right; color:var(--muted); flex-shrink:0; }
   th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
   th { color:var(--muted); font-weight:500; }
   .empty { color:var(--muted); text-align:center; padding:24px; font-size:13px; }
@@ -56,6 +62,7 @@
   <button class="tab" data-tab="banned" onclick="switchTab('banned')">封禁管理</button>
   <button class="tab" data-tab="users" onclick="switchTab('users')">用户监控</button>
   <button class="tab" data-tab="announce" onclick="switchTab('announce')">公告</button>
+  <button class="tab" data-tab="stats" onclick="switchTab('stats')">数据统计</button>
 </div>
 
 <div id="reports" class="panel"></div>
@@ -63,6 +70,7 @@
 <div id="banned" class="panel" style="display:none"></div>
 <div id="users" class="panel" style="display:none"></div>
 <div id="announce" class="panel" style="display:none"></div>
+<div id="stats" class="panel" style="display:none"></div>
 
 <div class="toast" id="toast"></div>
 
@@ -107,7 +115,62 @@ async function load(tab) {
     else if (tab === 'banned') await loadBanned();
     else if (tab === 'users') await loadUsers();
     else if (tab === 'announce') await loadAnnounce();
+    else if (tab === 'stats') await loadStats();
   } catch (e) {}
+}
+
+// ---- 数据统计（总量 + 近7天趋势 + 分类分布 + 活跃设备 Top）----
+async function loadStats() {
+  const el = document.getElementById('stats');
+  const d = await apiFetch('/admin/stats');
+  const t = d.totals;
+  const trend = d.trend || [];
+  const cats = d.categories || [];
+  const topDev = d.top_devices || [];
+  const evRank = d.event_rank || [];
+  const evMax = Math.max(1, ...evRank.map(x => x.c));
+  const maxAct = Math.max(1, ...trend.map(x => x.active_devices));
+  const maxPost = Math.max(1, ...trend.map(x => x.posts));
+  const maxCat = Math.max(1, ...cats.map(x => x.c));
+  const trendRows = trend.map(x => {
+    const dd = x.date.slice(5);
+    return `<div class="stat-row">
+      <span class="stat-date">${dd}</span>
+      <div class="stat-bars">
+        <div class="stat-bar"><div class="bar-inner" style="width:${Math.round(x.active_devices / maxAct * 100)}%;background:var(--accent)"></div></div>
+        <div class="stat-bar"><div class="bar-inner" style="width:${Math.round(x.posts / maxPost * 100)}%;background:#34c759"></div></div>
+      </div>
+      <span class="stat-num-sm">活跃${x.active_devices} · 帖${x.posts}</span>
+    </div>`;
+  }).join('');
+  const catRows = cats.map(c => `<div class="stat-row">
+      <span class="stat-date">${esc(c.category)}</span>
+      <div class="stat-bars"><div class="stat-bar"><div class="bar-inner" style="width:${Math.round(c.c / maxCat * 100)}%;background:#ff9500"></div></div></div>
+      <span class="stat-num-sm">${c.c}</span>
+    </div>`).join('');
+  el.innerHTML = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <div class="card" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700">${t.posts}</div><div style="color:var(--muted);font-size:12px">帖子</div></div>
+      <div class="card" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700">${t.comments}</div><div style="color:var(--muted);font-size:12px">评论</div></div>
+      <div class="card" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700">${t.likes}</div><div style="color:var(--muted);font-size:12px">点赞</div></div>
+      <div class="card" style="flex:1;min-width:110px;text-align:center"><div style="font-size:26px;font-weight:700">${t.uploads}</div><div style="color:var(--muted);font-size:12px">图片</div></div>
+    </div>
+    <div class="card"><h3>近7天 · 活跃设备(蓝) / 发帖(绿)</h3>${trendRows || '<div class="meta">暂无数据</div>'}</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+      <div class="card" style="flex:1;min-width:240px"><h3>分类分布</h3>${catRows || '<div class="meta">暂无帖子</div>'}</div>
+      <div class="card" style="flex:1;min-width:240px"><h3>活跃设备 Top10</h3>
+        <table><tr><th>设备 ID</th><th>发帖+评论</th></tr>
+        ${topDev.map(u => `<tr><td style="font-family:monospace;font-size:11px">${esc(u.device_id || '未知设备')}</td><td>${u.actions}</td></tr>`).join('') || '<tr><td colspan="2" class="meta">暂无</td></tr>'}
+        </table>
+      </div>
+    </div>
+    <div class="card" style="margin-top:10px"><h3>近7天 · 功能使用排行（App 埋点）</h3>
+      ${evRank.length ? evRank.map(e => `<div class="stat-row">
+        <span class="stat-date" style="width:auto;min-width:120px">${esc(e.event)}</span>
+        <div class="stat-bars"><div class="stat-bar"><div class="bar-inner" style="width:${Math.round(e.c / evMax * 100)}%;background:#af52de"></div></div></div>
+        <span class="stat-num-sm">${e.c}</span>
+      </div>`).join('') : '<div class="meta">暂无埋点数据（App 更新后自动上报）</div>'}
+    </div>`;
 }
 
 async function loadUsers() {
