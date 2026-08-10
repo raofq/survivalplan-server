@@ -1071,3 +1071,100 @@ PRIVACY_HTML_EN = """<!DOCTYPE html>
 </body>
 </html>
 """
+
+
+SUPPORT_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>生存计划 - 支持</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; color: #222; line-height: 1.7; }
+  h1 { font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 12px; }
+  h2 { font-size: 18px; margin-top: 28px; color: #333; }
+  p, li { font-size: 15px; }
+  .updated { color: #888; font-size: 13px; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #eee; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>生存计划 支持中心</h1>
+<p class="updated">更新日期：2026年8月8日</p>
+
+<h2>关于「生存计划」</h2>
+<p>「生存计划」是一款个人财务管理工具，帮助你记账、管预算，并用「生存模拟器」看清资金还能撑多久。App 免费下载，Pro 功能一次买断（¥68），无订阅。</p>
+
+<h2>常见问题</h2>
+<h2>1. 我的数据存在哪里？</h2>
+<p>记账、预算、模拟器参数等财务数据<b>全部保存在你的设备本地</b>（SwiftData），不会上传服务器。只有「圈子」社区内容（帖子、评论、点赞、图片）会存储在服务器，用于社区展示与防滥用。</p>
+
+<h2>2. 如何恢复 Pro 购买？</h2>
+<p>Pro 为一次买断制。换机或重装后，在「设置」页点击「恢复购买」即可，无需重复付费。</p>
+
+<h2>3. 如何删除我发布的内容？</h2>
+<p>在「圈子」中，你可以在自己的帖子/评论上点击删除。如需删除全部数据或注销，请通过下方联系方式联系开发者，我们将在 7 个工作日内处理。</p>
+
+<h2>4. App 出问题或想提建议？</h2>
+<p>请通过 GitHub Issues 提交问题，描述你的设备型号、系统版本和复现步骤，我们会尽快回复。</p>
+
+<h2>联系我们</h2>
+<p>GitHub Issues：<br>
+<a href="https://github.com/raofq/survivalplan/issues">https://github.com/raofq/survivalplan/issues</a></p>
+
+<div class="footer">© 2026 生存计划。保留所有权利。</div>
+</body>
+</html>
+"""
+
+
+SUPPORT_HTML_EN = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Survival Plan - Support</title>
+<style>
+  body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; color: #222; line-height: 1.7; }
+  h1 { font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 12px; }
+  h2 { font-size: 18px; margin-top: 28px; color: #333; }
+  p, li { font-size: 15px; }
+  .updated { color: #888; font-size: 13px; }
+  .footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #eee; color: #888; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>Survival Plan Support</h1>
+<p class="updated">Last updated: August 8, 2026</p>
+
+<h2>About Survival Plan</h2>
+<p>Survival Plan is a personal finance tool that helps you track spending, manage monthly budgets, and see how long your money will last with the Survival Simulator. The app is free to download; Pro features are a one-time purchase with no subscription.</p>
+
+<h2>FAQ</h2>
+<h2>1. Where is my data stored?</h2>
+<p>All financial data (records, budgets, simulator parameters) is stored <b>locally on your device</b> (SwiftData) and is never uploaded. Only Circle community content (posts, comments, likes, images) is stored on our server for community display and abuse prevention.</p>
+
+<h2>2. How do I restore my Pro purchase?</h2>
+<p>Pro is a one-time purchase. After reinstalling or switching devices, tap "Restore Purchases" in Settings — you will not be charged again.</p>
+
+<h2>3. How do I delete my content?</h2>
+<p>In the Circle, you can delete your own posts and comments. To delete all data or request account deletion, contact us via the link below and we will process it within 7 business days.</p>
+
+<h2>4. Found a bug or have a suggestion?</h2>
+<p>Please file an issue via GitHub Issues with your device model, OS version, and steps to reproduce. We will get back to you as soon as possible.</p>
+
+<h2>Contact Us</h2>
+<p>GitHub Issues:<br>
+<a href="https://github.com/raofq/survivalplan/issues">https://github.com/raofq/survivalplan/issues</a></p>
+
+<div class="footer">© 2026 Survival Plan. All rights reserved.</div>
+</body>
+</html>
+"""
+
+
+@app.get("/support", response_class=HTMLResponse)
+def support_page(lang: str = "zh"):
+    if lang.lower() in ("en", "en-us"):
+        return SUPPORT_HTML_EN
+    return SUPPORT_HTML
