@@ -258,9 +258,18 @@ def mask_contact(c: str | None) -> str | None:
     return c[:2] + "****" + c[-2:]
 
 
+def _norm_time(s):
+    """旧数据 created_at 是 'YYYY-MM-DDTHH:MM:SS.ffffff'（微秒无Z），
+    iOS 端 ISO8601DateFormatter 解析失败会 fallback 当前时间——统一输出标准 UTC 格式"""
+    if s and re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+$", s):
+        return s[:19] + "Z"
+    return s
+
+
 def post_row(r):
     """把 DB 行转成 API 字典；image_urls 解析为列表，老单图数据兜底；隐藏 device_id 和原始联系方式"""
     d = dict(r)
+    d["created_at"] = _norm_time(d.get("created_at"))
     d.pop("device_id", None)
     raw_contact = d.get("contact")
     d.pop("contact", None)  # 原始联系方式不出网，只给脱敏版
@@ -475,7 +484,12 @@ def list_comments(post_id: str, limit: int = 20, offset: int = 0):
         (post_id, limit, offset),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["created_at"] = _norm_time(d.get("created_at"))
+        out.append(d)
+    return out
 
 
 @app.post("/api/posts/{post_id}/comments")
