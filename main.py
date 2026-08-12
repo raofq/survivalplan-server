@@ -83,7 +83,7 @@ DAILY_LIMITS = {"comment": 50, "like": 100, "report": 20}
 def daily_count(table: str, device_id: str) -> int:
     """统计某设备今日在指定表产生的记录数（表名来自代码内常量，无注入风险）"""
     conn = get_db()
-    today = datetime.utcnow().isoformat()[:10]
+    today = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")[:10]
     n = conn.execute(
         f"SELECT COUNT(*) FROM {table} WHERE device_id = ? AND substr(created_at, 1, 10) = ?",
         (device_id, today),
@@ -281,7 +281,7 @@ def seed_posts(conn):
         for cat, title, content in SEED_POSTS:
             conn.execute(
                 "INSERT INTO posts (id, category, title, content, author, likes, created_at) VALUES (?,?,?,?,?,?,?)",
-                (str(uuid.uuid4()), cat, title, content, "圈主", 0, datetime.utcnow().isoformat()),
+                (str(uuid.uuid4()), cat, title, content, "圈主", 0, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
             )
         conn.commit()
 
@@ -380,7 +380,7 @@ def create_post(post: PostIn):
     conn = get_db()
     # 防刷底线：同一设备每天最多 20 条（正常用户不可能超过；App 层另有免费用户 3 条限制）
     if post.device_id:
-        today = datetime.utcnow().isoformat()[:10]
+        today = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")[:10]
         today_count = conn.execute(
             "SELECT COUNT(*) FROM posts WHERE device_id = ? AND substr(created_at, 1, 10) = ?",
             (post.device_id, today),
@@ -396,7 +396,7 @@ def create_post(post: PostIn):
          post.author.strip() or "匿名", 0, urls[0] if urls else None,
          json.dumps(urls), post.location, post.salary,
          (post.company or "").strip() or None, (post.contact or "").strip() or None,
-         post.device_id, datetime.utcnow().isoformat()),
+         post.device_id, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
     )
     conn.commit()
     storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
@@ -431,7 +431,7 @@ def like_post(post_id: str, device_id: Optional[str] = None):
             conn.execute("UPDATE posts SET likes = likes + 1 WHERE id = ?", (post_id,))
             conn.execute(
                 "INSERT INTO likes (id, post_id, device_id, created_at) VALUES (?,?,?,?)",
-                (str(uuid.uuid4()), post_id, device_id, datetime.utcnow().isoformat()),
+                (str(uuid.uuid4()), post_id, device_id, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
             )
     else:
         # legacy 无 device：只 +1 不可取消
@@ -500,7 +500,7 @@ def create_comment(post_id: str, comment: CommentIn):
     conn.execute(
         "INSERT INTO comments (id, post_id, content, author, device_id, created_at) VALUES (?,?,?,?,?,?)",
         (comment_id, post_id, comment.content.strip(),
-         comment.author.strip() or "匿名", comment.device_id, datetime.utcnow().isoformat()),
+         comment.author.strip() or "匿名", comment.device_id, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
     )
     conn.commit()
     storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
@@ -530,7 +530,7 @@ def create_report(report: ReportIn):
     conn.execute(
         "INSERT INTO reports (id, target_type, target_id, reason, reported_by, device_id, created_at) VALUES (?,?,?,?,?,?,?)",
         (report_id, report.target_type, report.target_id, report.reason.strip(),
-         report.reported_by.strip() or "匿名", report.device_id, datetime.utcnow().isoformat()),
+         report.reported_by.strip() or "匿名", report.device_id, datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
     )
     conn.commit()
     storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
@@ -552,7 +552,7 @@ def health():
 @app.get("/api/announcement")
 def get_announcement():
     conn = get_db()
-    now = datetime.utcnow().isoformat()
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     rows = conn.execute(
         "SELECT * FROM announcements WHERE expires_at IS NULL OR expires_at > ? "
         "ORDER BY created_at DESC LIMIT 1", (now,)
@@ -582,12 +582,12 @@ def admin_create_announcement(data: AnnouncementIn, x_admin_token: str = Header(
     conn = get_db()
     # 作废旧公告
     conn.execute("UPDATE announcements SET expires_at = ? WHERE expires_at IS NULL OR expires_at > ?",
-                 (datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+                 (datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"), datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")))
     aid = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO announcements (id, title, content, level, created_at, expires_at) VALUES (?,?,?,?,?,?)",
         (aid, data.title.strip(), data.content.strip(), data.level,
-         datetime.utcnow().isoformat(), data.expires_at),
+         datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"), data.expires_at),
     )
     conn.commit()
     storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
@@ -601,7 +601,7 @@ def admin_create_announcement(data: AnnouncementIn, x_admin_token: str = Header(
 def admin_clear_announcement(x_admin_token: str = Header(default="", alias="X-Admin-Token")):
     require_admin(x_admin_token)
     conn = get_db()
-    now = datetime.utcnow().isoformat()
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute("UPDATE announcements SET expires_at = ? WHERE expires_at IS NULL OR expires_at > ?", (now, now))
     conn.commit()
     storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
@@ -619,7 +619,7 @@ def admin_export(x_admin_token: str = Header(default="", alias="X-Admin-Token"))
         raise HTTPException(403, "无权限")
     conn = get_db()
     data = {
-        "exported_at": datetime.utcnow().isoformat(),
+        "exported_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "posts": [dict(r) for r in conn.execute("SELECT * FROM posts ORDER BY created_at").fetchall()],
         "comments": [dict(r) for r in conn.execute("SELECT * FROM comments ORDER BY created_at").fetchall()],
         "likes": [dict(r) for r in conn.execute("SELECT * FROM likes ORDER BY created_at").fetchall()],
@@ -916,7 +916,7 @@ def admin_ban(data: BanIn, x_admin_token: str = Header(default="", alias="X-Admi
     conn.execute(
         "INSERT INTO banned_devices (device_id, reason, created_at) VALUES (?,?,?) "
         "ON CONFLICT(device_id) DO UPDATE SET reason = excluded.reason",
-        (data.device_id.strip(), data.reason.strip() or "违规", datetime.utcnow().isoformat()),
+        (data.device_id.strip(), data.reason.strip() or "违规", datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")),
     )
     conn.commit()
     conn.close()
