@@ -25,11 +25,19 @@ import time
 import logging
 from collections import defaultdict, deque
 
+import storage_sync  # R2 对象存储同步（防重部署丢数据）
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "circle.db")
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-app = FastAPI(title="Survival Plan Circle API", version="0.2.0")
+app = FastAPI(title="Survival Plan Circle API", version="0.2.1")
+
+
+@app.on_event("startup")
+def _startup_restore():
+    """启动时从 R2 恢复数据（仅本地无数据时拉取，重部署后数据不丢）"""
+    storage_sync.restore(DB_PATH, UPLOAD_DIR)
 
 app.add_middleware(
     CORSMiddleware,
@@ -391,6 +399,7 @@ def create_post(post: PostIn):
          post.device_id, datetime.utcnow().isoformat()),
     )
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     row = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
     conn.close()
     return post_row(row)
@@ -428,6 +437,7 @@ def like_post(post_id: str, device_id: Optional[str] = None):
         # legacy 无 device：只 +1 不可取消
         conn.execute("UPDATE posts SET likes = likes + 1 WHERE id = ?", (post_id,))
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     row = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
     conn.close()
     result = post_row(row)
@@ -446,6 +456,7 @@ def delete_post(post_id: str, device_id: Optional[str] = None):
         "DELETE FROM posts WHERE id = ? AND device_id = ?", (post_id, device_id)
     )
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     if cur.rowcount == 0:
         conn.close()
         raise HTTPException(404, "帖子不存在或无权删除")
@@ -492,6 +503,7 @@ def create_comment(post_id: str, comment: CommentIn):
          comment.author.strip() or "匿名", comment.device_id, datetime.utcnow().isoformat()),
     )
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     row = conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone()
     conn.close()
     return dict(row)
@@ -521,6 +533,7 @@ def create_report(report: ReportIn):
          report.reported_by.strip() or "匿名", report.device_id, datetime.utcnow().isoformat()),
     )
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     conn.close()
     # 举报达到阈值 → 帖子自动下架
     auto_hide_if_reported(report.target_type, report.target_id)
@@ -576,6 +589,7 @@ def admin_create_announcement(data: AnnouncementIn, x_admin_token: str = Header(
          datetime.utcnow().isoformat(), data.expires_at),
     )
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     conn.close()
     audit_log("announcement", f"level={data.level} title={data.title.strip()[:20]}")
     return {"status": "ok", "id": aid}
@@ -589,6 +603,7 @@ def admin_clear_announcement(x_admin_token: str = Header(default="", alias="X-Ad
     now = datetime.utcnow().isoformat()
     conn.execute("UPDATE announcements SET expires_at = ? WHERE expires_at IS NULL OR expires_at > ?", (now, now))
     conn.commit()
+    storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步
     conn.close()
     audit_log("announcement_clear", "")
     return {"status": "ok"}
@@ -937,6 +952,7 @@ async def upload_image(file: UploadFile = File(...)):
     path = os.path.join(UPLOAD_DIR, fname)
     with open(path, "wb") as f:
         f.write(data)
+        storage_sync.sync_after_write(DB_PATH, UPLOAD_DIR)  # R2 同步 uploads
     return {"url": f"/uploads/{fname}"}
 
 
