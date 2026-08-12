@@ -541,8 +541,9 @@ def create_report(report: ReportIn):
     return {"status": "ok", "id": report_id}
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
+    """健康检查：GET/HEAD 均支持（UptimeRobot 等监控用 HEAD 探测）"""
     return {"status": "ok", "categories": CATEGORIES}
 
 
